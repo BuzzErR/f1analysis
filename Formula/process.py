@@ -1,6 +1,6 @@
 import logging
-from multiprocessing import Process, current_process
-import queue
+from multiprocessing import Process, current_process, Queue
+import multiprocessing
 from importlib import reload
 import numpy as np
 import pandas as pd
@@ -14,6 +14,7 @@ def get_logger():
     log.setLevel(logging.DEBUG)
 
     fh = logging.StreamHandler()
+    # fh = logging.FileHandler("processing.log")
     fmt = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
     formatter = logging.Formatter(fmt)
     fh.setFormatter(formatter)
@@ -23,7 +24,7 @@ def get_logger():
 
 def get_driver_ahead_speed(data, driver_row, pbar) -> np.int_:
     driver_ahead_num = driver_row['DriverAhead']
-    pbar.update()
+    pbar.update(1)
     if str(driver_ahead_num) == '':
         return np.NaN
     driver_ahead_data = data[data['DriverNumber'] == driver_ahead_num]
@@ -34,18 +35,26 @@ def get_driver_ahead_speed(data, driver_row, pbar) -> np.int_:
     return driver_ahead_data.iloc[0]['Speed']
 
 
-def process_driver(data, driver_num, log) -> pd.DataFrame:
+def process_driver(data, driver_num, log, lock, position, queue):
     driver_data = data[data['DriverNumber'] == driver_num].copy()
     driver_data['X_sector_diff'] = driver_data['X_sector'].diff()
     driver_data['Y_sector_diff'] = driver_data['Y_sector'].diff()
     driver_data = driver_data[(driver_data['X_sector_diff'] != 0) | (driver_data['Y_sector_diff'] != 0)]
     log.debug(f'started processing for {driver_num}')
     tqdm.pandas()
-    pbar = tqdm()
-    driver_data['Ahead_driver_speed'] = driver_data.progress_apply(lambda d: get_driver_ahead_speed(data, d, pbar), axis=1)
+    with lock:
+        bar = tqdm(
+            desc=f'Driver: {current_process().name}',
+            total=len(driver_data),
+            position=position,
+            leave=False
+        )
+    driver_data['Ahead_driver_speed'] = driver_data.apply(lambda d: get_driver_ahead_speed(data, d, bar), axis=1)
     log.debug(f'processing by: {current_process().name} ended')
     driver_data.drop(columns=['X_sector_diff', 'Y_sector_diff'], inplace=True)
-    return driver_data
+    with lock:
+        bar.close()
+    queue.put(driver_data)
 
 
 def form_overall_df(data, drivers_list, x_sector_length, y_sector_length) -> pd.DataFrame:
@@ -65,6 +74,7 @@ if __name__ == '__main__':
     x_size_of_sector = 50
     y_size_of_sector = 50
 
+    lock_mp = multiprocessing.Manager().Lock()
     ff1.Cache.enable_cache('cache')
     session = ff1.get_session(2021, 20, 'R')
     laps = session.load_laps(with_telemetry=True)
@@ -73,32 +83,37 @@ if __name__ == '__main__':
     drivers = list(laps['DriverNumber'].unique())
     logger.debug(f'{len(drivers)} to process')
     all_drivers_data = form_overall_df(laps, drivers, x_size_of_sector, y_size_of_sector)
-    drivers_sectors = process_driver(all_drivers_data, drivers[0], logger)
+    que = Queue()
+    thread = Process(
+        target=process_driver,
+        name=drivers[0],
+        args=(all_drivers_data.copy(), drivers[0], logger, lock_mp, 1, que))
+    thread.start()
+    drivers_sectors = que.get()
+    print(drivers_sectors)
+    thread.join()
+    thread.close()
     drivers = drivers[1:]
     threads = list()
-    que = queue.Queue()
 
     i = 0
-    NUM_OF_THREADS = 2
+    NUM_OF_THREADS = 4
     while i < len(drivers):
         for j in range(NUM_OF_THREADS):
             thread = Process(
                 target=process_driver,
                 name=drivers[i],
-                args=(all_drivers_data.copy(), drivers[i], logger))
+                args=(all_drivers_data.copy(), drivers[i], logger, lock_mp, i + 1, que))
+            i += 1
             thread.start()
             threads.append(thread)
-            i += 1
-
-        for j in range(len(threads)):
-            threads[j].join()
 
         while not que.empty():
             result = que.get()
             drivers_sectors.append(result)
 
-    # for i in range(len(drivers)):
-    #     result = process_driver(all_drivers_data, drivers[i], logger)
-    #     drivers_sectors.append(result)
+        for j in range(len(threads)):
+            threads[j].join()
+            threads[j].close()
 
     drivers_sectors.to_csv("sectors.csv")
