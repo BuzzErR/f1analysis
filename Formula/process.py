@@ -32,29 +32,32 @@ def get_driver_ahead_speed(data, driver_row, pbar) -> np.int_:
                                           (driver_ahead_data['Time'] < driver_row['Time'] + pd.Timedelta("1s")) &
                                           (driver_ahead_data['X_sector'] == driver_ahead_data['X_sector']) &
                                           (driver_ahead_data['Y_sector'] == driver_ahead_data['Y_sector'])]
+    if len(driver_ahead_data) == 0:
+        return np.NaN
     return driver_ahead_data.iloc[0]['Speed']
 
 
-def process_driver(data, driver_num, log, lock, position, queue):
+def process_driver(data, driver_num, log, lock):
     driver_data = data[data['DriverNumber'] == driver_num].copy()
     driver_data['X_sector_diff'] = driver_data['X_sector'].diff()
     driver_data['Y_sector_diff'] = driver_data['Y_sector'].diff()
     driver_data = driver_data[(driver_data['X_sector_diff'] != 0) | (driver_data['Y_sector_diff'] != 0)]
     log.debug(f'started processing for {driver_num}')
     tqdm.pandas()
+    current = current_process()
     with lock:
         bar = tqdm(
-            desc=f'Driver: {current_process().name}',
+            desc=f'Driver: {current.name}',
             total=len(driver_data),
-            position=position,
+            position=current._identity[0] - 1,
             leave=False
         )
     driver_data['Ahead_driver_speed'] = driver_data.apply(lambda d: get_driver_ahead_speed(data, d, bar), axis=1)
-    log.debug(f'processing by: {current_process().name} ended')
+    log.debug(f'processing by: {current.name} ended')
     driver_data.drop(columns=['X_sector_diff', 'Y_sector_diff'], inplace=True)
     with lock:
         bar.close()
-    queue.put(driver_data)
+    driver_data.to_csv(f"{current.name}.csv")
 
 
 def form_overall_df(data, drivers_list, x_sector_length, y_sector_length) -> pd.DataFrame:
@@ -70,6 +73,13 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length) -> pd.
     return return_data
 
 
+def form_general_df(drivers_list):
+    result = pd.read_csv(f"{drivers[0]}.csv")
+    for driver in drivers[1:]:
+        result.append(pd.read_csv(f"{driver}.csv"))
+    return result
+
+
 if __name__ == '__main__':
     x_size_of_sector = 50
     y_size_of_sector = 50
@@ -83,17 +93,6 @@ if __name__ == '__main__':
     drivers = list(laps['DriverNumber'].unique())
     logger.debug(f'{len(drivers)} to process')
     all_drivers_data = form_overall_df(laps, drivers, x_size_of_sector, y_size_of_sector)
-    que = Queue()
-    thread = Process(
-        target=process_driver,
-        name=drivers[0],
-        args=(all_drivers_data.copy(), drivers[0], logger, lock_mp, 1, que))
-    thread.start()
-    drivers_sectors = que.get()
-    print(drivers_sectors)
-    thread.join()
-    thread.close()
-    drivers = drivers[1:]
     threads = list()
 
     i = 0
@@ -103,17 +102,13 @@ if __name__ == '__main__':
             thread = Process(
                 target=process_driver,
                 name=drivers[i],
-                args=(all_drivers_data.copy(), drivers[i], logger, lock_mp, i + 1, que))
+                args=(all_drivers_data.copy(),drivers[i], logger, lock_mp))
             i += 1
             thread.start()
             threads.append(thread)
 
-        while not que.empty():
-            result = que.get()
-            drivers_sectors.append(result)
-
         for j in range(len(threads)):
             threads[j].join()
-            threads[j].close()
 
-    drivers_sectors.to_csv("sectors.csv")
+    overall_df = form_general_df(drivers)
+    overall_df.to_csv(f"complete_df.csv")
