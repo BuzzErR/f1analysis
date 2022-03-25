@@ -1,3 +1,4 @@
+import datetime
 import logging
 from multiprocessing import Process, current_process, Queue
 import multiprocessing
@@ -15,7 +16,7 @@ def get_logger():
     log.setLevel(logging.DEBUG)
 
     # fh = logging.StreamHandler()
-    fh = logging.FileHandler("processing.log", mode='w')
+    fh = logging.FileHandler("processing.log")
     fmt = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
     formatter = logging.Formatter(fmt)
     fh.setFormatter(formatter)
@@ -38,11 +39,13 @@ def get_driver_ahead_speed(data, driver_row, pbar) -> np.int_:
     return driver_ahead_data.iloc[0]['Speed']
 
 
-def process_driver(data, driver_num, log, lock):
+def process_driver(data, driver_num, lock):
+    log = get_logger()
     driver_data = data[data['DriverNumber'] == driver_num].copy()
     driver_data['X_sector_diff'] = driver_data['X_sector'].diff()
     driver_data['Y_sector_diff'] = driver_data['Y_sector'].diff()
     driver_data = driver_data[(driver_data['X_sector_diff'] != 0) | (driver_data['Y_sector_diff'] != 0)]
+    start_time = datetime.datetime.now()
     log.info(f'started processing for {driver_num}')
     tqdm.pandas()
     current = current_process()
@@ -54,7 +57,7 @@ def process_driver(data, driver_num, log, lock):
             leave=False
         )
     driver_data['Ahead_driver_speed'] = driver_data.apply(lambda d: get_driver_ahead_speed(data, d, bar), axis=1)
-    log.info(f'processing by: {current.name} ended')
+    log.info(f'processing by: {current.name} ended, took {datetime.datetime.now() - start_time}')
     driver_data.drop(columns=['X_sector_diff', 'Y_sector_diff'], inplace=True)
     driver_data.to_csv(f"{current.name}.csv")
     return
@@ -73,26 +76,29 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length) -> pd.
     return return_data
 
 
-def form_general_df(drivers_list):
+def form_general_df(drivers_list, log):
     result = pd.read_csv(f"{drivers_list[0]}.csv")
     for driver_to_process in drivers_list[1:]:
-        result.append(pd.read_csv(f"{driver_to_process}.csv"))
+        data = pd.read_csv(f"{driver_to_process}.csv")
+        result = result.append(data)
+    log.debug(f'{len(result)} total len of dataframe')
     return result
 
 
-def get_drivers_to_process(drivers_list):
+def get_drivers_to_process(drivers_list, log):
     result = []
     return_drivers = []
     for driver_to_process in drivers_list:
         try:
             df = pd.read_csv(f'{driver_to_process}.csv')
+            log.debug(f'{len(df)} rows added')
             result.append(df)
         except Exception as _:
             return_drivers.append(driver_to_process)
     if len(result) > 0:
         df = result[0]
-        for data in result:
-            df.append(data)
+        for data in result[1:]:
+            df = df.append(data)
 
     return return_drivers, result
 
@@ -110,9 +116,11 @@ if __name__ == '__main__':
     session.load_telemetry()
     logger = get_logger()
 
-    drivers, preloaded_data = get_drivers_to_process(list(laps['DriverNumber'].unique()))
+    drivers, preloaded_data = get_drivers_to_process(list(laps['DriverNumber'].unique()), logger)
     logger.info(f'{len(drivers)} to process')
-    all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR)
+    all_drivers_data = pd.DataFrame({})
+    if len(drivers) > 0:
+        all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR)
 
     planed_threads = list()
     active_threads = list()
@@ -135,10 +143,9 @@ if __name__ == '__main__':
 
         logger.info(f'{len(active_threads)} processes in active pool')
         active_threads = [thread for thread in active_threads if thread.is_alive()]
-        logger.info(f'{len(active_threads)} processes left')
+        logger.info(f'{len(active_threads)} processes left, {len(planed_threads)} more to process')
 
-        time.sleep(3)
+        time.sleep(5)
 
-    overall_df = form_general_df(drivers)
-    overall_df = overall_df.append(preloaded_data) if len(preloaded_data) > 0 else overall_df
+    overall_df = form_general_df(list(laps['DriverNumber'].unique()), logger)
     overall_df.to_csv(f"complete_df.csv")
