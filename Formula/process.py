@@ -43,7 +43,7 @@ def process_driver(data, driver_num, log, lock):
     driver_data['X_sector_diff'] = driver_data['X_sector'].diff()
     driver_data['Y_sector_diff'] = driver_data['Y_sector'].diff()
     driver_data = driver_data[(driver_data['X_sector_diff'] != 0) | (driver_data['Y_sector_diff'] != 0)]
-    log.debug(f'started processing for {driver_num}')
+    log.info(f'started processing for {driver_num}')
     tqdm.pandas()
     current = current_process()
     with lock:
@@ -54,19 +54,18 @@ def process_driver(data, driver_num, log, lock):
             leave=False
         )
     driver_data['Ahead_driver_speed'] = driver_data.apply(lambda d: get_driver_ahead_speed(data, d, bar), axis=1)
-    log.debug(f'processing by: {current.name} ended')
+    log.info(f'processing by: {current.name} ended')
     driver_data.drop(columns=['X_sector_diff', 'Y_sector_diff'], inplace=True)
-    with lock:
-        bar.close()
     driver_data.to_csv(f"{current.name}.csv")
+    return
 
 
 def form_overall_df(data, drivers_list, x_sector_length, y_sector_length) -> pd.DataFrame:
     return_data = data.pick_driver(drivers_list[0]).get_telemetry()
     return_data['DriverNumber'] = [drivers_list[0]] * len(return_data)
-    for driver in drivers_list[1:]:
-        driver_data = data.pick_driver(driver).get_telemetry()
-        driver_data['DriverNumber'] = [driver] * len(driver_data)
+    for driver_to_process in drivers_list[1:]:
+        driver_data = data.pick_driver(driver_to_process).get_telemetry()
+        driver_data['DriverNumber'] = [driver_to_process] * len(driver_data)
         return_data = return_data.append(driver_data)
 
     return_data['X_sector'] = return_data['X'] // x_sector_length
@@ -76,9 +75,26 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length) -> pd.
 
 def form_general_df(drivers_list):
     result = pd.read_csv(f"{drivers_list[0]}.csv")
-    for driver in drivers_list[1:]:
-        result.append(pd.read_csv(f"{driver}.csv"))
+    for driver_to_process in drivers_list[1:]:
+        result.append(pd.read_csv(f"{driver_to_process}.csv"))
     return result
+
+
+def get_drivers_to_process(drivers_list):
+    result = []
+    return_drivers = []
+    for driver_to_process in drivers_list:
+        try:
+            df = pd.read_csv(f'{driver_to_process}.csv')
+            result.append(df)
+        except Exception as _:
+            return_drivers.append(driver_to_process)
+    if len(result) > 0:
+        df = result[0]
+        for data in result:
+            df.append(data)
+
+    return return_drivers, result
 
 
 if __name__ == '__main__':
@@ -94,8 +110,8 @@ if __name__ == '__main__':
     session.load_telemetry()
     logger = get_logger()
 
-    drivers = list(laps['DriverNumber'].unique())
-    logger.debug(f'{len(drivers)} to process')
+    drivers, preloaded_data = get_drivers_to_process(list(laps['DriverNumber'].unique()))
+    logger.info(f'{len(drivers)} to process')
     all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR)
 
     planed_threads = list()
@@ -110,18 +126,19 @@ if __name__ == '__main__':
 
     i = 0
     while i < len(drivers) or len(active_threads) > 0:
-        if len(active_threads) < NUM_OF_THREADS and len(planed_threads) > 0:
+        while len(active_threads) < NUM_OF_THREADS and len(planed_threads) > 0:
             thread = planed_threads[-1]
             active_threads.append(thread)
             active_threads[-1].start()
             planed_threads = planed_threads[:-1]
             i += 1
 
-        for j in range(len(active_threads)):
-            if not active_threads[j].is_alive():
-                active_threads = active_threads.pop(j)
+        logger.info(f'{len(active_threads)} processes in active pool')
+        active_threads = [thread for thread in active_threads if thread.is_alive()]
+        logger.info(f'{len(active_threads)} processes left')
 
         time.sleep(3)
 
     overall_df = form_general_df(drivers)
+    overall_df = overall_df.append(preloaded_data) if len(preloaded_data) > 0 else overall_df
     overall_df.to_csv(f"complete_df.csv")
