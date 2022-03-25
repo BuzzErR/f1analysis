@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import fastf1 as ff1
 from tqdm import tqdm
+import time
 
 
 def get_logger():
@@ -13,8 +14,8 @@ def get_logger():
     log = logging.getLogger("threading_example")
     log.setLevel(logging.DEBUG)
 
-    fh = logging.StreamHandler()
-    # fh = logging.FileHandler("processing.log")
+    # fh = logging.StreamHandler()
+    fh = logging.FileHandler("processing.log", mode='w')
     fmt = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
     formatter = logging.Formatter(fmt)
     fh.setFormatter(formatter)
@@ -74,15 +75,17 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length) -> pd.
 
 
 def form_general_df(drivers_list):
-    result = pd.read_csv(f"{drivers[0]}.csv")
-    for driver in drivers[1:]:
+    result = pd.read_csv(f"{drivers_list[0]}.csv")
+    for driver in drivers_list[1:]:
         result.append(pd.read_csv(f"{driver}.csv"))
     return result
 
 
 if __name__ == '__main__':
-    x_size_of_sector = 50
-    y_size_of_sector = 50
+
+    X_SIZE_OF_SECTOR = 50
+    Y_SIZE_OF_SECTOR = 50
+    NUM_OF_THREADS = 4
 
     lock_mp = multiprocessing.Manager().Lock()
     ff1.Cache.enable_cache('cache')
@@ -90,25 +93,35 @@ if __name__ == '__main__':
     laps = session.load_laps(with_telemetry=True)
     session.load_telemetry()
     logger = get_logger()
+
     drivers = list(laps['DriverNumber'].unique())
     logger.debug(f'{len(drivers)} to process')
-    all_drivers_data = form_overall_df(laps, drivers, x_size_of_sector, y_size_of_sector)
-    threads = list()
+    all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR)
+
+    planed_threads = list()
+    active_threads = list()
+
+    for driver in drivers:
+        thread = Process(
+            target=process_driver,
+            name=driver,
+            args=(all_drivers_data.copy(), driver, logger, lock_mp))
+        planed_threads.append(thread)
 
     i = 0
-    NUM_OF_THREADS = 4
-    while i < len(drivers):
-        for j in range(NUM_OF_THREADS):
-            thread = Process(
-                target=process_driver,
-                name=drivers[i],
-                args=(all_drivers_data.copy(),drivers[i], logger, lock_mp))
+    while i < len(drivers) or len(active_threads) > 0:
+        if len(active_threads) < NUM_OF_THREADS and len(planed_threads) > 0:
+            thread = planed_threads[-1]
+            active_threads.append(thread)
+            active_threads[-1].start()
+            planed_threads = planed_threads[:-1]
             i += 1
-            thread.start()
-            threads.append(thread)
 
-        for j in range(len(threads)):
-            threads[j].join()
+        for j in range(len(active_threads)):
+            if not active_threads[j].is_alive():
+                active_threads = active_threads.pop(j)
+
+        time.sleep(3)
 
     overall_df = form_general_df(drivers)
     overall_df.to_csv(f"complete_df.csv")
