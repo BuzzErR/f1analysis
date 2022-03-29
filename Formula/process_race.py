@@ -165,10 +165,10 @@ def main():
     if len(drivers) == 0:
         return
 
-    start_time = datetime.datetime.strptime('00:00:00', '%H:%M:%S')
+    start_time = pd.to_timedelta('0 days 00:00:00')
 
     for block in range(NUM_OF_BLOCKS):
-        delta = datetime.timedelta(minutes=2)
+        delta = pd.to_timedelta('0 days 00:02:00')
         all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time, start_time +
                                            delta)
         start_time += delta
