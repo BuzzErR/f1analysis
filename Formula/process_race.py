@@ -89,6 +89,7 @@ def process_driver(data, driver_num, year_to_process, race_number_to_process):
     driver_data = pd.concat((driver_data, driver_ahead_data), axis=1)
     log.info(f'processing by: {current.name} ended, took {datetime.datetime.now() - start_time}')
     driver_data.drop(columns=['X_sector_diff', 'Y_sector_diff'], inplace=True)
+    driver_data = driver_data[driver_data['Driver_ahead_speed'].notna()]
     driver_data.to_csv(f"{current.name}_{year_to_process}_{race_number_to_process}.csv", mode='a', header=False)
     return
 
@@ -101,7 +102,7 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length, time_l
     return_data['DriverNumber'] = [drivers_list[0]] * len(return_data)
     for driver_to_process in drivers_list[1:]:
         driver_data = data.pick_driver(driver_to_process).get_telemetry()
-        driver_data = driver_data[time_limit_min < driver_data['Time'] < time_limit_max]
+        driver_data = driver_data[(time_limit_min < driver_data['Time']) & (driver_data['Time'] < time_limit_max)]
         driver_data['DriverNumber'] = [driver_to_process] * len(driver_data)
         return_data = pd.concat((return_data, driver_data))
 
@@ -115,7 +116,6 @@ def form_general_df(drivers_list, year_to_process, race_number_to_process, log):
     for driver_to_process in drivers_list[1:]:
         data = pd.read_csv(f"{driver_to_process}_{year_to_process}_{race_number_to_process}.csv")
         result = result.append(data)
-    result = result[result['Driver_ahead_speed'].notna()]
     log.debug(f'{len(result)} total len of dataframe')
     return result
 
@@ -151,7 +151,7 @@ def main():
     X_SIZE_OF_SECTOR = 100
     Y_SIZE_OF_SECTOR = 100
     NUM_OF_THREADS = 4
-    NUM_OF_BLOCKS = 5
+    TIME_DELTA_MINUTES = 5
 
     year, race_number = parse_arguments()
 
@@ -166,9 +166,10 @@ def main():
         return
 
     start_time = pd.to_timedelta('0 days 00:00:00')
-
-    for block in range(NUM_OF_BLOCKS):
-        delta = pd.to_timedelta('0 days 00:02:00')
+    laps['LapEndTime'] = laps['LapStartTime'] + laps['LapTime']
+    latestTime = laps['LapEndTime'].max()
+    while start_time <= latestTime:
+        delta = pd.to_timedelta('0 days 00:05:00')
         all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time, start_time +
                                            delta)
         start_time += delta
