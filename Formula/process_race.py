@@ -89,17 +89,19 @@ def process_driver(data, driver_num, year_to_process, race_number_to_process):
     driver_data = pd.concat((driver_data, driver_ahead_data), axis=1)
     log.info(f'processing by: {current.name} ended, took {datetime.datetime.now() - start_time}')
     driver_data.drop(columns=['X_sector_diff', 'Y_sector_diff'], inplace=True)
-    driver_data.to_csv(f"{current.name}_{year_to_process}_{race_number_to_process}.csv")
+    driver_data.to_csv(f"{current.name}_{year_to_process}_{race_number_to_process}.csv", mode='a', header=False)
     return
 
 
-def form_overall_df(data, drivers_list, x_sector_length, y_sector_length) -> pd.DataFrame:
+def form_overall_df(data, drivers_list, x_sector_length, y_sector_length, time_limit_min, time_limit_max) -> \
+        pd.DataFrame:
     if len(drivers_list) == 0:
         return pd.DataFrame({})
     return_data = data.pick_driver(drivers_list[0]).get_telemetry()
     return_data['DriverNumber'] = [drivers_list[0]] * len(return_data)
     for driver_to_process in drivers_list[1:]:
         driver_data = data.pick_driver(driver_to_process).get_telemetry()
+        driver_data = driver_data[time_limit_min < driver_data['Timestamp'] < time_limit_max]
         driver_data['DriverNumber'] = [driver_to_process] * len(driver_data)
         return_data = pd.concat((return_data, driver_data))
 
@@ -145,10 +147,11 @@ def parse_arguments():
     return args.y, args.r
 
 
-if __name__ == '__main__':
+def main():
     X_SIZE_OF_SECTOR = 100
     Y_SIZE_OF_SECTOR = 100
     NUM_OF_THREADS = 4
+    NUM_OF_BLOCKS = 5
 
     year, race_number = parse_arguments()
 
@@ -157,34 +160,46 @@ if __name__ == '__main__':
     laps = session.load_laps(with_telemetry=True)
     session.load_telemetry()
     logger = get_logger(year, race_number)
-
     drivers, preloaded_data = get_drivers_to_process(list(laps['DriverNumber'].unique()), logger, year, race_number)
     logger.info(f'{len(drivers)} to process')
-    all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR)
-    planed_threads = list()
-    active_threads = list()
+    if len(drivers) == 0:
+        return
 
-    for driver in drivers:
-        thread = Process(
-            target=process_driver,
-            name=driver,
-            args=(all_drivers_data.copy(), driver, year, race_number))
-        planed_threads.append(thread)
+    start_time = datetime.datetime.strptime('00:00:00', '%H:%M:%S')
 
-    i = 0
-    while i < len(drivers) or len(active_threads) > 0:
-        while len(active_threads) < NUM_OF_THREADS and len(planed_threads) > 0:
-            thread = planed_threads[-1]
-            active_threads.append(thread)
-            active_threads[-1].start()
-            planed_threads = planed_threads[:-1]
-            i += 1
+    for block in range(NUM_OF_BLOCKS):
+        delta = datetime.timedelta(minutes=2)
+        all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time, start_time +
+                                           delta)
+        start_time += delta
+        planed_threads = list()
+        active_threads = list()
 
-        logger.info(f'{len(active_threads)} processes in active pool')
-        active_threads = [thread for thread in active_threads if thread.is_alive()]
-        logger.info(f'{len(active_threads)} processes left, {len(planed_threads)} more to process')
+        for driver in drivers:
+            thread = Process(
+                target=process_driver,
+                name=driver,
+                args=(all_drivers_data.copy(), driver, year, race_number))
+            planed_threads.append(thread)
 
-        time.sleep(5)
+        i = 0
+        while i < len(drivers) or len(active_threads) > 0:
+            while len(active_threads) < NUM_OF_THREADS and len(planed_threads) > 0:
+                thread = planed_threads[-1]
+                active_threads.append(thread)
+                active_threads[-1].start()
+                planed_threads = planed_threads[:-1]
+                i += 1
 
-    overall_df = form_general_df(list(laps['DriverNumber'].unique()), year, race_number, logger)
-    overall_df.to_csv(f"complete_df_{year}_{race_number}.csv")
+            logger.info(f'{len(active_threads)} processes in active pool')
+            active_threads = [thread for thread in active_threads if thread.is_alive()]
+            logger.info(f'{len(active_threads)} processes left, {len(planed_threads)} more to process')
+
+            time.sleep(5)
+
+        overall_df = form_general_df(list(laps['DriverNumber'].unique()), year, race_number, logger)
+        overall_df.to_csv(f"complete_df_{year}_{race_number}.csv", mode='a', header=False)
+
+
+if __name__ == '__main__':
+    main()
