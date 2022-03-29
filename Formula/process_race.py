@@ -101,7 +101,7 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length, time_l
     return_data['DriverNumber'] = [drivers_list[0]] * len(return_data)
     for driver_to_process in drivers_list[1:]:
         driver_data = data.pick_driver(driver_to_process).get_telemetry()
-        driver_data = driver_data[time_limit_min < driver_data['Timestamp'] < time_limit_max]
+        driver_data = driver_data[time_limit_min < driver_data['Time'] < time_limit_max]
         driver_data['DriverNumber'] = [driver_to_process] * len(driver_data)
         return_data = pd.concat((return_data, driver_data))
 
