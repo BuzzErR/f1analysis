@@ -169,8 +169,9 @@ def parse_arguments():
                                                  "\nHow to use this program:")
     parser.add_argument("-r", help="Number of race to process", required=True)
     parser.add_argument("-y", help="Year to process", required=True)
+    parser.add_argument("-d", help="Time delta in minutes", required=True)
     args = parser.parse_args()
-    return args.y, args.r
+    return args.y, args.r. args.d
 
 
 def create_directory(year_number, race_number):
@@ -190,9 +191,10 @@ def main():
     X_SIZE_OF_SECTOR = 100
     Y_SIZE_OF_SECTOR = 100
     NUM_OF_THREADS = 4
-    TIME_DELTA_MINUTES = 59
 
-    year_number, race_number = parse_arguments()
+    year_number, race_number, time_delta_minutes = parse_arguments()
+    time_delta_hours = time_delta_minutes // 60
+    time_delta_minutes = time_delta_minutes % 60
 
     # setup raw data, directories, logger
     ff1.Cache.enable_cache('cache')
@@ -214,7 +216,7 @@ def main():
     laps['LapEndTime'] = laps['LapStartTime'] + laps['LapTime']
     latest_time = laps['LapEndTime'].max()
     while start_time <= latest_time:
-        delta = pd.to_timedelta(f'0 days 00:{TIME_DELTA_MINUTES}:00')
+        delta = pd.to_timedelta(f'0 days {time_delta_hours}:{time_delta_minutes}:00')
         all_drivers_data = form_overall_df(laps, all_drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time, start_time +
                                            delta)
         start_time += delta
