@@ -5,8 +5,10 @@ from importlib import reload
 import numpy as np
 import pandas as pd
 import fastf1 as ff1
+import pandas.errors
 from tqdm import tqdm
 import time
+import os
 import argparse
 
 
@@ -74,9 +76,10 @@ def get_driver_ahead_data(data, driver_data):
     return driver_ahead_data_to_return
 
 
-def process_driver(data, driver_num, year_to_process, race_number_to_process):
-    log = get_logger(year_to_process, race_number_to_process)
-    driver_data = data[data['DriverNumber'] == driver_num].copy()
+def process_driver(data, driver_num, year_number, race_number, time_limit):
+    log = get_logger(year_number, race_number)
+    # нужно, чтобы отсечь эту "секунду" после, которая может помешать при анализе
+    driver_data = data[(data['DriverNumber'] == driver_num) & (data['Time'] < time_limit)].copy()
     driver_data['X_sector_diff'] = driver_data['X_sector'].diff()
     driver_data['Y_sector_diff'] = driver_data['Y_sector'].diff()
     driver_data = driver_data[(driver_data['X_sector_diff'] != 0) | (driver_data['Y_sector_diff'] != 0)]
@@ -90,7 +93,12 @@ def process_driver(data, driver_num, year_to_process, race_number_to_process):
     log.info(f'processing by: {current.name} ended, took {datetime.datetime.now() - start_time}')
     driver_data.drop(columns=['X_sector_diff', 'Y_sector_diff'], inplace=True)
     driver_data = driver_data[driver_data['Driver_ahead_speed'].notna()]
-    driver_data.to_csv(f"{current.name}_{year_to_process}_{race_number_to_process}.csv", mode='a', header=False)
+
+    if os.path.exists(get_driver_csv_directory(year_number, race_number, current.name)):
+        driver_data.to_csv(get_driver_csv_directory(year_number, race_number, current.name), mode='a', index=False,
+                           header=False)
+    else:
+        driver_data.to_csv(get_driver_csv_directory(year_number, race_number, current.name), index=False)
     return
 
 
@@ -98,8 +106,13 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length, time_l
         pd.DataFrame:
     if len(drivers_list) == 0:
         return pd.DataFrame({})
+
+    # прибавляем секнду, чтобы адекватно находить записи гонщиков впереди
+    time_limit_max += pd.to_timedelta('0 days 00:00:01')
+
     return_data = data.pick_driver(drivers_list[0]).get_telemetry()
     return_data['DriverNumber'] = [drivers_list[0]] * len(return_data)
+    return_data = return_data[(time_limit_min < return_data['Time']) & (return_data['Time'] < time_limit_max)]
     for driver_to_process in drivers_list[1:]:
         driver_data = data.pick_driver(driver_to_process).get_telemetry()
         driver_data = driver_data[(time_limit_min < driver_data['Time']) & (driver_data['Time'] < time_limit_max)]
@@ -111,13 +124,23 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length, time_l
     return return_data
 
 
-def form_general_df(drivers_list, year_to_process, race_number_to_process, log):
-    result = pd.read_csv(f"{drivers_list[0]}_{year_to_process}_{race_number_to_process}.csv")
-    for driver_to_process in drivers_list[1:]:
-        data = pd.read_csv(f"{driver_to_process}_{year_to_process}_{race_number_to_process}.csv")
-        result = result.append(data)
+def form_general_df(drivers_list, year_number, race_number, log):
+    first_driver = 0
+    while True:
+        try:
+            result = pd.read_csv(get_driver_csv_directory(year_number, race_number, drivers_list[first_driver]))
+            break
+        except pandas.errors.EmptyDataError:
+            first_driver += 1
+
+    for driver_to_process in drivers_list[first_driver + 1:]:
+        try:
+            data = pd.read_csv(get_driver_csv_directory(year_number, race_number, driver_to_process))
+            result = pd.concat([result, data], axis=0)
+        except pandas.errors.EmptyDataError:
+            pass
     log.debug(f'{len(result)} total len of dataframe')
-    return result
+    return result.drop_duplicates
 
 
 def get_drivers_to_process(drivers_list, log, year_number, race):
@@ -125,11 +148,14 @@ def get_drivers_to_process(drivers_list, log, year_number, race):
     return_drivers = []
     for driver_to_process in drivers_list:
         try:
-            df = pd.read_csv(f'{driver_to_process}_{year_number}_{race}.csv')
+            df = pd.read_csv(get_driver_csv_directory(year_number, race, driver_to_process))
             log.debug(f'{len(df)} rows added')
             result.append(df)
-        except Exception as _:
+        except FileNotFoundError as _:
             return_drivers.append(driver_to_process)
+        except pandas.errors.EmptyDataError as _:
+            pass
+
     if len(result) > 0:
         df = result[0]
         for data in result[1:]:
@@ -147,30 +173,49 @@ def parse_arguments():
     return args.y, args.r
 
 
+def create_directory(year_number, race_number):
+    isExist = os.path.exists(f"races/{year_number}")
+    if not isExist:
+        os.makedirs(f"races/{year_number}")
+    isExist = os.path.exists(f"races/{year_number}/{race_number}")
+    if not isExist:
+        os.makedirs(f"races/{year_number}/{race_number}")
+
+
+def get_driver_csv_directory(year_number, race_number, driver):
+    return f"races/{year_number}/{race_number}/{driver}.csv"
+
+
 def main():
     X_SIZE_OF_SECTOR = 100
     Y_SIZE_OF_SECTOR = 100
     NUM_OF_THREADS = 4
-    TIME_DELTA_MINUTES = 5
+    TIME_DELTA_MINUTES = 59
 
-    year, race_number = parse_arguments()
+    year_number, race_number = parse_arguments()
 
+    # setup raw data, directories, logger
     ff1.Cache.enable_cache('cache')
-    session = ff1.get_session(year, race_number, 'R')
+    session = ff1.get_session(year_number, race_number, 'R')
     laps = session.load_laps(with_telemetry=True)
     session.load_telemetry()
-    logger = get_logger(year, race_number)
-    drivers, preloaded_data = get_drivers_to_process(list(laps['DriverNumber'].unique()), logger, year, race_number)
+    logger = get_logger(year_number, race_number)
+    create_directory(year_number, race_number)
+
+    all_drivers = list(laps['DriverNumber'].unique())
+    drivers, preloaded_data = get_drivers_to_process(all_drivers, logger, year_number, race_number)
     logger.info(f'{len(drivers)} to process')
     if len(drivers) == 0:
+        overall_df = form_general_df(all_drivers, year_number, race_number, logger)
+        overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"))
         return
 
     start_time = pd.to_timedelta('0 days 00:00:00')
     laps['LapEndTime'] = laps['LapStartTime'] + laps['LapTime']
-    latestTime = laps['LapEndTime'].max()
-    while start_time <= latestTime:
-        delta = pd.to_timedelta('0 days 00:05:00')
-        all_drivers_data = form_overall_df(laps, drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time, start_time +
+    latest_time = laps['LapEndTime'].max()
+    while start_time <= latest_time:
+        delta = pd.to_timedelta(f'0 days 00:{TIME_DELTA_MINUTES}:00')
+        all_drivers_data = form_overall_df(laps, all_drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time, start_time +
                                            delta)
         start_time += delta
         planed_threads = list()
@@ -180,7 +225,7 @@ def main():
             thread = Process(
                 target=process_driver,
                 name=driver,
-                args=(all_drivers_data.copy(), driver, year, race_number))
+                args=(all_drivers_data.copy(), driver, year_number, race_number, start_time))
             planed_threads.append(thread)
 
         i = 0
@@ -197,9 +242,12 @@ def main():
             logger.info(f'{len(active_threads)} processes left, {len(planed_threads)} more to process')
 
             time.sleep(5)
-
-        overall_df = form_general_df(list(laps['DriverNumber'].unique()), year, race_number, logger)
-        overall_df.to_csv(f"complete_df_{year}_{race_number}.csv", mode='a', header=False)
+        overall_df = form_general_df(all_drivers, year_number, race_number, logger)
+        if os.path.exists(get_driver_csv_directory(year_number, race_number, "overall")):
+            overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"), mode='a', index=False,
+                               header=False)
+        else:
+            overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"))
 
 
 if __name__ == '__main__':
