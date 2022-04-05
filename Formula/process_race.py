@@ -171,7 +171,7 @@ def parse_arguments():
     parser.add_argument("-y", help="Year to process", required=True)
     parser.add_argument("-d", help="Time delta in minutes", required=True)
     args = parser.parse_args()
-    return args.y, args.r. args.d
+    return args.y, args.r, args.d
 
 
 def create_directory(year_number, race_number):
