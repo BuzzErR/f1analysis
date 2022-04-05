@@ -140,7 +140,7 @@ def form_general_df(drivers_list, year_number, race_number, log):
         except pandas.errors.EmptyDataError:
             pass
     log.debug(f'{len(result)} total len of dataframe')
-    return result.drop_duplicates
+    return result.drop_duplicates()
 
 
 def get_drivers_to_process(drivers_list, log, year_number, race):
