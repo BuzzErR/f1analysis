@@ -18,7 +18,7 @@ def get_logger(year_number, race):
     log.setLevel(logging.DEBUG)
 
     # fh = logging.StreamHandler()
-    fh = logging.FileHandler(f"processing_{year_number}_{race}.log")
+    fh = logging.FileHandler(f"log/processing_{year_number}_{race}.log")
     fmt = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
     formatter = logging.Formatter(fmt)
     fh.setFormatter(formatter)
@@ -26,16 +26,21 @@ def get_logger(year_number, race):
     return log
 
 
-def get_driver_ahead_data(data, driver_data):
+def get_driver_rows_to_process(driver_data, current, tqdm_enable):
+    return tqdm(driver_data.iloc[:-1].iterrows(), total=driver_data.shape[0] - 1,
+                position=current._identity[0] - 1,
+                desc=f'Driver: {current.name}') \
+        if tqdm_enable else driver_data.iloc[:-1].iterrows()
+
+
+def get_driver_ahead_data(data, driver_data, tqdm_enable):
     driver_ahead_data_to_return = {"Driver_ahead_speed": [], "Driver_ahead_DRS": [], "Driver_ahead_throttle": [],
                                    "Overtake": []}
     columns_of_ahead = ["Driver_ahead_speed", "Driver_ahead_DRS", "Driver_ahead_throttle", "Overtake"]
     driver_ahead_data_to_return = pd.DataFrame(driver_ahead_data_to_return)
     driver_data = driver_data.reset_index(drop=True)
     current = current_process()
-    for index, driver_row in tqdm(driver_data.iloc[:-1].iterrows(), total=driver_data.shape[0] - 1,
-                                  position=current._identity[0] - 1,
-                                  desc=f'Driver: {current.name}'):
+    for index, driver_row in get_driver_rows_to_process(driver_data, current, tqdm_enable):
         driver_ahead_num = driver_row['DriverAhead']
         driver_ahead_data = data[data['DriverNumber'] == driver_ahead_num]
         ahead_row = driver_ahead_data[(driver_ahead_data['Time'] >= driver_row['Time']) &
@@ -76,7 +81,7 @@ def get_driver_ahead_data(data, driver_data):
     return driver_ahead_data_to_return
 
 
-def process_driver(data, driver_num, year_number, race_number, time_limit):
+def process_driver(data, driver_num, year_number, race_number, time_limit, tqdm_enable):
     log = get_logger(year_number, race_number)
     # нужно, чтобы отсечь эту "секунду" после, которая может помешать при анализе
     driver_data = data[(data['DriverNumber'] == driver_num) & (data['Time'] < time_limit)].copy()
@@ -86,14 +91,15 @@ def process_driver(data, driver_num, year_number, race_number, time_limit):
     start_time = datetime.datetime.now()
     log.info(f'started processing for {driver_num}')
     current = current_process()
-    driver_ahead_data = get_driver_ahead_data(data, driver_data)
+    driver_ahead_data = get_driver_ahead_data(data, driver_data, tqdm_enable)
     driver_ahead_data.reset_index(inplace=True, drop=True)
     driver_data.reset_index(inplace=True, drop=True)
     driver_data = pd.concat((driver_data, driver_ahead_data), axis=1)
-    log.info(f'processing by: {current.name} ended, took {datetime.datetime.now() - start_time}')
+    log.info(f'processing by: {current.name} ended, took {datetime.datetime.now() - start_time}, '
+             f'{time_limit} limit processed, {len(driver_data)} rows')
     driver_data.drop(columns=['X_sector_diff', 'Y_sector_diff'], inplace=True)
     driver_data = driver_data[driver_data['Driver_ahead_speed'].notna()]
-
+    driver_data = driver_data.drop_duplicates()
     if os.path.exists(get_driver_csv_directory(year_number, race_number, current.name)):
         driver_data.to_csv(get_driver_csv_directory(year_number, race_number, current.name), mode='a', index=False,
                            header=False)
@@ -164,22 +170,57 @@ def get_drivers_to_process(drivers_list, log, year_number, race):
     return return_drivers, result
 
 
+def parse_list(input_string):
+    input_string = input_string.replace(' ', '')
+    if input_string[0] != '{' and input_string[-1] != '}':
+        return [int(input_string)]
+
+    input_string = input_string[1:-1]
+    if input_string.find('-') != -1:
+        input_string = list(map(int, input_string.split('-')))
+        return list(range(input_string[0], input_string[-1]))
+    else:
+        return list(map(int, input_string.split('-')))
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Attention! You'll see multiple progress bars."
                                                  "\nHow to use this program:")
-    parser.add_argument("-r", help="Number of race to process", required=True)
-    parser.add_argument("-y", help="Year to process", required=True)
+    group_races = parser.add_mutually_exclusive_group(required=True)
+    group_years = parser.add_mutually_exclusive_group(required=True)
+
+    group_races.add_argument("-r", nargs='+', type=int,
+                             help="Number of race to process or you can select multiple races like this:"
+                                  "1 2 4... Note that if you have chosen multiple years race numbers will be"
+                                  "processed for each")
+    group_races.add_argument("--range_races", nargs='+', type=int,
+                             help="Range of races to process:"
+                                  "1 4... Note that if you have chosen multiple years race numbers will be"
+                                  "processed for each")
+    group_years.add_argument("-y", nargs='+', type=int,
+                             help="Year to process or you can select multiple years like this:"
+                                  "2019 2020 2021...")
+    group_years.add_argument("--range_years", nargs='+', type=int, help="Range of years to process")
+
     parser.add_argument("-d", help="Time delta in minutes", required=True)
+    parser.add_argument("-s", nargs='?', help="Process everything without tqdm progress bar")
     args = parser.parse_args()
-    return args.y, args.r, int(args.d)
+    years = args.r
+    if args.range_races is not None:
+        years = list(range(args.range_years[0], args.range_years[-1] + 1))
+
+    races = args.y
+    if args.range_races is not None:
+        races = list(range(args.range_races[0], args.range_races[-1] + 1))
+    return years, races, int(args.d), args.s is not None
 
 
 def create_directory(year_number, race_number):
-    isExist = os.path.exists(f"races/{year_number}")
-    if not isExist:
+    exists = os.path.exists(f"races/{year_number}")
+    if not exists:
         os.makedirs(f"races/{year_number}")
-    isExist = os.path.exists(f"races/{year_number}/{race_number}")
-    if not isExist:
+    exists = os.path.exists(f"races/{year_number}/{race_number}")
+    if not exists:
         os.makedirs(f"races/{year_number}/{race_number}")
 
 
@@ -192,64 +233,68 @@ def main():
     Y_SIZE_OF_SECTOR = 100
     NUM_OF_THREADS = 4
 
-    year_number, race_number, time_delta_minutes = parse_arguments()
+    years_to_process, races_to_process, time_delta_minutes, is_silenced = parse_arguments()
     time_delta_hours = time_delta_minutes // 60
     time_delta_minutes = time_delta_minutes % 60
+    for year_number in years_to_process:
+        for race_number in races_to_process:
+            # setup raw data, directories, logger
+            ff1.Cache.enable_cache('cache')
+            session = ff1.get_session(year_number, race_number, 'R')
+            laps = session.load_laps(with_telemetry=True)
+            session.load_telemetry()
+            logger = get_logger(year_number, race_number)
+            logger.info(f"{year_number} out of: {years_to_process}, {race_number} race, out of {races_to_process}")
+            create_directory(year_number, race_number)
 
-    # setup raw data, directories, logger
-    ff1.Cache.enable_cache('cache')
-    session = ff1.get_session(year_number, race_number, 'R')
-    laps = session.load_laps(with_telemetry=True)
-    session.load_telemetry()
-    logger = get_logger(year_number, race_number)
-    create_directory(year_number, race_number)
+            all_drivers = list(laps['DriverNumber'].unique())
+            drivers, preloaded_data = get_drivers_to_process(all_drivers, logger, year_number, race_number)
+            logger.info(f'{len(drivers)} to process')
+            if len(drivers) == 0:
+                overall_df = form_general_df(all_drivers, year_number, race_number, logger)
+                overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"))
+                return
 
-    all_drivers = list(laps['DriverNumber'].unique())
-    drivers, preloaded_data = get_drivers_to_process(all_drivers, logger, year_number, race_number)
-    logger.info(f'{len(drivers)} to process')
-    if len(drivers) == 0:
-        overall_df = form_general_df(all_drivers, year_number, race_number, logger)
-        overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"))
-        return
+            start_time = pd.to_timedelta('0 days 00:00:00')
+            laps['LapEndTime'] = laps['LapStartTime'] + laps['LapTime']
+            latest_time = laps['LapEndTime'].max()
+            while start_time <= latest_time:
+                delta = pd.to_timedelta(f'0 days {time_delta_hours}:{time_delta_minutes}:00')
+                all_drivers_data = form_overall_df(laps, all_drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time,
+                                                   start_time +
+                                                   delta)
+                start_time += delta
+                planed_threads = list()
+                active_threads = list()
 
-    start_time = pd.to_timedelta('0 days 00:00:00')
-    laps['LapEndTime'] = laps['LapStartTime'] + laps['LapTime']
-    latest_time = laps['LapEndTime'].max()
-    while start_time <= latest_time:
-        delta = pd.to_timedelta(f'0 days {time_delta_hours}:{time_delta_minutes}:00')
-        all_drivers_data = form_overall_df(laps, all_drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time, start_time +
-                                           delta)
-        start_time += delta
-        planed_threads = list()
-        active_threads = list()
+                for driver in drivers:
+                    thread = Process(
+                        target=process_driver,
+                        name=driver,
+                        args=(all_drivers_data.copy(), driver, year_number, race_number, start_time, is_silenced))
+                    planed_threads.append(thread)
 
-        for driver in drivers:
-            thread = Process(
-                target=process_driver,
-                name=driver,
-                args=(all_drivers_data.copy(), driver, year_number, race_number, start_time))
-            planed_threads.append(thread)
+                i = 0
+                while i < len(drivers) or len(active_threads) > 0:
+                    while len(active_threads) < NUM_OF_THREADS and len(planed_threads) > 0:
+                        thread = planed_threads[-1]
+                        active_threads.append(thread)
+                        active_threads[-1].start()
+                        planed_threads = planed_threads[:-1]
+                        i += 1
 
-        i = 0
-        while i < len(drivers) or len(active_threads) > 0:
-            while len(active_threads) < NUM_OF_THREADS and len(planed_threads) > 0:
-                thread = planed_threads[-1]
-                active_threads.append(thread)
-                active_threads[-1].start()
-                planed_threads = planed_threads[:-1]
-                i += 1
+                    logger.info(f'{len(active_threads)} processes in active pool')
+                    active_threads = [thread for thread in active_threads if thread.is_alive()]
+                    logger.info(f'{len(active_threads)} processes left, {len(planed_threads)} more to process')
 
-            logger.info(f'{len(active_threads)} processes in active pool')
-            active_threads = [thread for thread in active_threads if thread.is_alive()]
-            logger.info(f'{len(active_threads)} processes left, {len(planed_threads)} more to process')
-
-            time.sleep(5)
-        overall_df = form_general_df(all_drivers, year_number, race_number, logger)
-        if os.path.exists(get_driver_csv_directory(year_number, race_number, "overall")):
-            overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"), mode='a', index=False,
-                               header=False)
-        else:
-            overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"))
+                    time.sleep(5)
+                overall_df = form_general_df(all_drivers, year_number, race_number, logger)
+                if os.path.exists(get_driver_csv_directory(year_number, race_number, "overall")):
+                    overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"), mode='a',
+                                      index=False,
+                                      header=False)
+                else:
+                    overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"))
 
 
 if __name__ == '__main__':
