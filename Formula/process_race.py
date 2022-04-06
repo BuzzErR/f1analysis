@@ -12,13 +12,13 @@ import os
 import argparse
 
 
-def get_logger(year_number, race):
+def get_logger(year_number, race, tqdm_enable):
     reload(logging)
     log = logging.getLogger("threading_example")
     log.setLevel(logging.DEBUG)
-
-    # fh = logging.StreamHandler()
     fh = logging.FileHandler(f"log/processing_{year_number}_{race}.log")
+    if tqdm_enable:
+        fh = logging.StreamHandler()
     fmt = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
     formatter = logging.Formatter(fmt)
     fh.setFormatter(formatter)
@@ -82,7 +82,7 @@ def get_driver_ahead_data(data, driver_data, tqdm_enable):
 
 
 def process_driver(data, driver_num, year_number, race_number, time_limit, tqdm_enable):
-    log = get_logger(year_number, race_number)
+    log = get_logger(year_number, race_number, tqdm_enable)
     # нужно, чтобы отсечь эту "секунду" после, которая может помешать при анализе
     driver_data = data[(data['DriverNumber'] == driver_num) & (data['Time'] < time_limit)].copy()
     driver_data['X_sector_diff'] = driver_data['X_sector'].diff()
@@ -212,7 +212,7 @@ def parse_arguments():
     races = args.y
     if args.range_races is not None:
         races = list(range(args.range_races[0], args.range_races[-1] + 1))
-    return years, races, int(args.d), args.s is not None
+    return years, races, int(args.d), args.s is None
 
 
 def create_directory(year_number, race_number):
@@ -233,7 +233,7 @@ def main():
     Y_SIZE_OF_SECTOR = 100
     NUM_OF_THREADS = 4
 
-    years_to_process, races_to_process, time_delta_minutes, is_silenced = parse_arguments()
+    years_to_process, races_to_process, time_delta_minutes, enable_terminal = parse_arguments()
     time_delta_hours = time_delta_minutes // 60
     time_delta_minutes = time_delta_minutes % 60
     for year_number in years_to_process:
@@ -243,7 +243,7 @@ def main():
             session = ff1.get_session(year_number, race_number, 'R')
             laps = session.load_laps(with_telemetry=True)
             session.load_telemetry()
-            logger = get_logger(year_number, race_number)
+            logger = get_logger(year_number, race_number, enable_terminal)
             logger.info(f"{year_number} out of: {years_to_process}, {race_number} race, out of {races_to_process}")
             create_directory(year_number, race_number)
 
@@ -271,7 +271,7 @@ def main():
                     thread = Process(
                         target=process_driver,
                         name=driver,
-                        args=(all_drivers_data.copy(), driver, year_number, race_number, start_time, is_silenced))
+                        args=(all_drivers_data.copy(), driver, year_number, race_number, start_time, enable_terminal))
                     planed_threads.append(thread)
 
                 i = 0
