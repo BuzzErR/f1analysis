@@ -205,11 +205,11 @@ def parse_arguments():
     parser.add_argument("-d", help="Time delta in minutes", required=True)
     parser.add_argument("-s", nargs='?', help="Process everything without tqdm progress bar")
     args = parser.parse_args()
-    years = args.r
-    if args.range_races is not None:
+    years = args.y
+    if args.range_years is not None:
         years = list(range(args.range_years[0], args.range_years[-1] + 1))
 
-    races = args.y
+    races = args.r
     if args.range_races is not None:
         races = list(range(args.range_races[0], args.range_races[-1] + 1))
     return years, races, int(args.d), args.s is None
@@ -236,6 +236,7 @@ def main():
     years_to_process, races_to_process, time_delta_minutes, enable_terminal = parse_arguments()
     time_delta_hours = time_delta_minutes // 60
     time_delta_minutes = time_delta_minutes % 60
+    print(years_to_process, races_to_process)
     for year_number in years_to_process:
         for race_number in races_to_process:
             # setup raw data, directories, logger
