@@ -108,15 +108,15 @@ def process_driver(data, driver_num, year_number, race_number, time_limit, tqdm_
     return
 
 
-def form_overall_df(data, drivers_list, x_sector_length, y_sector_length, time_limit_min, time_limit_max) -> \
-        pd.DataFrame:
+def form_overall_df(data, drivers_list, x_sector_length, y_sector_length, time_limit_min, time_limit_max):
     if len(drivers_list) == 0:
-        return pd.DataFrame({})
-
+        return pd.DataFrame({}), None
     # прибавляем секнду, чтобы адекватно находить записи гонщиков впереди
     time_limit_max += pd.to_timedelta('0 days 00:00:01')
-
-    return_data = data.pick_driver(drivers_list[0]).get_telemetry()
+    try:
+        return_data = data.pick_driver(drivers_list[0]).get_telemetry()
+    except ValueError as e:
+        return pd.DataFrame({}), e
     return_data['DriverNumber'] = [drivers_list[0]] * len(return_data)
     return_data = return_data[(time_limit_min < return_data['Time']) & (return_data['Time'] < time_limit_max)]
     for driver_to_process in drivers_list[1:]:
@@ -127,7 +127,7 @@ def form_overall_df(data, drivers_list, x_sector_length, y_sector_length, time_l
 
     return_data['X_sector'] = return_data['X'] // x_sector_length
     return_data['Y_sector'] = return_data['Y'] // y_sector_length
-    return return_data
+    return return_data, None
 
 
 def form_general_df(drivers_list, year_number, race_number, log):
@@ -260,9 +260,12 @@ def main():
             latest_time = laps['LapEndTime'].max()
             while start_time <= latest_time:
                 delta = pd.to_timedelta(f'0 days {time_delta_hours}:{time_delta_minutes}:00')
-                all_drivers_data = form_overall_df(laps, all_drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time,
+                all_drivers_data, error = form_overall_df(laps, all_drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time,
                                                    start_time +
                                                    delta)
+                if error is not None:
+                    logger.critical(error)
+                    continue
                 start_time += delta
                 planed_threads = list()
                 active_threads = list()
