@@ -247,7 +247,6 @@ def main():
             logger = get_logger(year_number, race_number, enable_terminal)
             logger.info(f"{year_number} out of: {years_to_process}, {race_number} race, out of {races_to_process}")
             create_directory(year_number, race_number)
-
             all_drivers = list(laps['DriverNumber'].unique())
             drivers, preloaded_data = get_drivers_to_process(all_drivers, logger, year_number, race_number)
             logger.info(f'{len(drivers)} to process')
@@ -259,14 +258,14 @@ def main():
             start_time = pd.to_timedelta('0 days 00:00:00')
             laps['LapEndTime'] = laps['LapStartTime'] + laps['LapTime']
             latest_time = laps['LapEndTime'].max()
+            error = None
             while start_time <= latest_time:
                 delta = pd.to_timedelta(f'0 days {time_delta_hours}:{time_delta_minutes}:00')
                 all_drivers_data, error = form_overall_df(laps, all_drivers, X_SIZE_OF_SECTOR, Y_SIZE_OF_SECTOR, start_time,
                                                    start_time +
                                                    delta)
                 if error is not None:
-                    logger.critical(error)
-                    continue
+                    break
                 start_time += delta
                 planed_threads = list()
                 active_threads = list()
@@ -299,6 +298,9 @@ def main():
                                       header=False)
                 else:
                     overall_df.to_csv(get_driver_csv_directory(year_number, race_number, "overall"))
+
+            if error is not None:
+                logger.critical(error, year_number, race_number)
 
 
 if __name__ == '__main__':
