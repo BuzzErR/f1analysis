@@ -2,6 +2,8 @@ import datetime
 import logging
 from multiprocessing import Process, current_process
 from importlib import reload
+
+import fastf1.api
 import numpy as np
 import pandas as pd
 import fastf1 as ff1
@@ -203,7 +205,7 @@ def parse_arguments():
     group_years.add_argument("--range_years", nargs='+', type=int, help="Range of years to process")
 
     parser.add_argument("-d", help="Time delta in minutes", required=True)
-    parser.add_argument("-s", nargs='?', help="Process everything without tqdm progress bar")
+    parser.add_argument("-t", nargs='?', help="Process everything with tqdm progress bar")
     args = parser.parse_args()
     years = args.y
     if args.range_years is not None:
@@ -212,7 +214,7 @@ def parse_arguments():
     races = args.r
     if args.range_races is not None:
         races = list(range(args.range_races[0], args.range_races[-1] + 1))
-    return years, races, int(args.d), args.s is None
+    return years, races, int(args.d), args.t is None
 
 
 def create_directory(year_number, race_number):
@@ -240,11 +242,15 @@ def main():
     for year_number in years_to_process:
         for race_number in races_to_process:
             # setup raw data, directories, logger
-            ff1.Cache.enable_cache('cache')
-            session = ff1.get_session(year_number, race_number, 'R')
-            laps = session.load_laps(with_telemetry=True)
-            session.load_telemetry()
-            logger = get_logger(year_number, race_number, enable_terminal)
+            try:
+                ff1.Cache.enable_cache('cache')
+                session = ff1.get_session(year_number, race_number, 'R')
+                laps = session.load_laps(with_telemetry=True)
+                session.load_telemetry()
+                logger = get_logger(year_number, race_number, enable_terminal)
+            except fastf1.api.SessionNotAvailableError:
+                logger.critical(f"Session {session}, {race_number} not found!")
+
             logger.info(f"{year_number} out of: {years_to_process}, {race_number} race, out of {races_to_process}")
             create_directory(year_number, race_number)
             all_drivers = list(laps['DriverNumber'].unique())
