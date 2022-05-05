@@ -243,6 +243,8 @@ def main():
         for race_number in races_to_process:
             # setup raw data, directories, logger
             logger = get_logger(year_number, race_number, enable_terminal)
+            session = None
+            laps = None
             try:
                 ff1.Cache.enable_cache('cache')
                 session = ff1.get_session(year_number, race_number, 'R')
@@ -250,6 +252,7 @@ def main():
                 session.load_telemetry()
             except fastf1.api.SessionNotAvailableError:
                 logger.critical(f"Session {session}, {race_number} not found!")
+
             logger.info(f"{year_number} out of: {years_to_process}, {race_number} race, out of {races_to_process}")
             create_directory(year_number, race_number)
             all_drivers = list(laps['DriverNumber'].unique())
